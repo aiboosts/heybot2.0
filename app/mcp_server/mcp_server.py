@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 SECRET_KEY = secrets.token_urlsafe(32)  # Better secret key generation
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "your-client-id.apps.googleusercontent.com")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "your-client-secret")
-REDIRECT_URI = "http://localhost:7861/auth/google/callback"  # Updated for local testing
-COOKIE_SECURE = False  # Set to True in production with HTTPS
+REDIRECT_URI = "http://ethical-rattler-chief.ngrok-free.app/auth/google/callback"  # Updated for local testing
+COOKIE_SECURE = True  # Set to True in production with HTTPS
 SAME_SITE = "lax"  
 
 # 🔥 OAuth2 Schema
@@ -315,7 +315,7 @@ with gr.Blocks() as mcp_ui:
         style = gr.Dropdown(["neutral", "sarkastisch", "eingebildet", "freundlich"], value="neutral", label="Ton / Stil")
         mode = gr.Dropdown(["default", "devsecops", "alert-only", "humor", "juristisch"], value="default", label="Modus")
         language = gr.Dropdown(["de", "en"], value="de", label="Sprache")
-        
+
     with gr.Row():
         auth_status = gr.HTML("""<div id="auth-status" class="p-4 border rounded-lg"></div>""")
 
@@ -358,7 +358,7 @@ with gr.Blocks() as mcp_ui:
     def run_script():
         try:
             # Get the absolute path to the script
-            script_path = os.path.abspath("app/bazinga_cve_bot.py")
+            script_path = os.path.abspath("bazinga_cve_bot.py")
             
             # Check if the script exists
             if not os.path.exists(script_path):
