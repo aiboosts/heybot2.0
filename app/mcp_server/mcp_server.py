@@ -9,26 +9,45 @@ import logging
 # 🚀 Third Party Imports
 import gradio as gr
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status, Form, Request, Response
+from fastapi import FastAPI, Depends, HTTPException, status, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
 from gradio.routes import mount_gradio_app
+from authlib.integrations.starlette_client import OAuth
 from authlib.jose import jwt
 from starlette.middleware.sessions import SessionMiddleware
 
 # 🚀 Local Imports
 from context_manager import save_context, load_context
 
-logging.basicConfig(level=logging.DEBUG)
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # 🔥 Configuration
-SECRET_KEY = "mein-super-geheimer-key"
+SECRET_KEY = secrets.token_urlsafe(32)  # Better secret key generation
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "your-client-id.apps.googleusercontent.com")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "your-client-secret")
-REDIRECT_URI = "https://ethical-rattler-chief.ngrok-free.app/auth/google/callback"
+REDIRECT_URI = "http://localhost:7861/auth/google/callback"  # Updated for local testing
+COOKIE_SECURE = False  # Set to True in production with HTTPS
+SAME_SITE = "lax"  
 
 # 🔥 OAuth2 Schema
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+
+# Initialize OAuth
+oauth = OAuth()
+oauth.register(
+    name='google',
+    client_id=GOOGLE_CLIENT_ID,
+    client_secret=GOOGLE_CLIENT_SECRET,
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'},
+)
 
 # Dummy user database
 fake_users_db = {
@@ -46,31 +65,81 @@ def authenticate_user(username: str, password: str):
     return user
 
 def create_access_token(data: dict, expires_delta: timedelta = timedelta(minutes=30)):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + expires_delta
-    to_encode.update({"exp": expire})
-    token = jwt.encode({"alg": "HS256"}, to_encode, SECRET_KEY)
-    return token
+    try:
+        # Prepare claims
+        to_encode = data.copy()
+        expire = datetime.utcnow() + expires_delta
+        to_encode.update({"exp": expire})
+        
+        # Create token
+        token = jwt.encode(
+            {'alg': 'HS256'},
+            to_encode,
+            SECRET_KEY
+        )
+        
+        # Ensure we return a string
+        if isinstance(token, bytes):
+            token = token.decode('utf-8')
+            
+        return token
+    except Exception as e:
+        logger.error(f"Token creation failed: {str(e)}")
+        raise ValueError("Failed to create token")
+
+def decode_token(token: str):
+    try:
+        if not token or len(token.split('.')) != 3:
+            raise ValueError("Invalid token format")
+            
+        claims = jwt.decode(token, SECRET_KEY)
+        
+        if not isinstance(claims, dict):
+            raise ValueError("Invalid token claims")
+            
+        if "sub" not in claims:
+            raise ValueError("Missing subject in token")
+            
+        # Check expiration
+        if "exp" in claims:
+            if datetime.utcnow() > datetime.fromtimestamp(claims["exp"]):
+                raise ValueError("Token expired")
+                
+        return claims
+    except Exception as e:
+        logger.error(f"Token validation failed: {str(e)}")
+        raise ValueError(f"Invalid token: {str(e)}")
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
-        payload = jwt.decode(token, SECRET_KEY)
-        username: str = payload.get("sub")
+        claims = decode_token(token)
+        username: str = claims.get("sub")
         if username is None or username not in fake_users_db:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
         return fake_users_db[username]
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalid or expired")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"}
+        )
 
 # 🚀 FastAPI App
 api = FastAPI()
 
-# Session Middleware (needed for state management)
+# Middleware
 api.add_middleware(
-    SessionMiddleware,
-    secret_key=SECRET_KEY,
-    session_cookie="oauth_session"
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+api.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
 # 🧠 Login Page
 @api.get("/login", response_class=HTMLResponse)
@@ -78,7 +147,7 @@ async def login_form(request: Request):
     token = request.cookies.get("access_token") or request.query_params.get("token")
     if token:
         try:
-            payload = jwt.decode(token, SECRET_KEY)
+            payload = decode_token(token)
             username: str = payload.get("sub")
             if username and username in fake_users_db:
                 return RedirectResponse(url=f"/ui?token={token}", status_code=302)
@@ -114,83 +183,66 @@ async def login_form(request: Request):
     </html>
     """
 
-# ✏️ Username/Password Login
-@api.post("/login")
+@api.post("/login", response_class=RedirectResponse)
 async def login_post(username: str = Form(...), password: str = Form(...)):
     user = authenticate_user(username, password)
     if not user:
-        return HTMLResponse(content="Login failed", status_code=401)
-    access_token = create_access_token(data={"sub": user["username"]})
-    response = RedirectResponse(url=f"/ui?token={access_token}", status_code=302)
-    response.set_cookie("access_token", access_token, httponly=True)
-    return response
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    try:
+        access_token = create_access_token(data={"sub": user["username"]})
+        
+        response = RedirectResponse(
+            url=f"/ui?token={access_token}", 
+            status_code=status.HTTP_303_SEE_OTHER
+        )
+        
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            max_age=1800,
+            secure=COOKIE_SECURE,
+            samesite=SAME_SITE
+        )
+        
+        return response
+    except Exception as e:
+        logger.error(f"Login failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Authentication error")
 
 # 🔐 Google OAuth Implementation
 @api.get("/auth/google")
 async def auth_google(request: Request):
-    # Generate state and store in session
-    state = secrets.token_urlsafe(16)
-    request.session["oauth_state"] = state
-    
-    authorization_url = (
-        f"https://accounts.google.com/o/oauth2/auth?"
-        f"response_type=code&"
-        f"client_id={GOOGLE_CLIENT_ID}&"
-        f"redirect_uri={REDIRECT_URI}&"
-        f"scope=openid%20email%20profile&"
-        f"state={state}"
-    )
-    return RedirectResponse(authorization_url)
+    redirect_uri = REDIRECT_URI
+    return await oauth.google.authorize_redirect(request, redirect_uri)
 
 @api.get("/auth/google/callback")
-async def auth_google_callback(request: Request, code: str = None, state: str = None, error: str = None):
-    # Verify state
-    if not state or state != request.session.get("oauth_state"):
-        raise HTTPException(status_code=400, detail="Invalid state")
-    
-    if error:
-        raise HTTPException(status_code=400, detail=f"Google auth error: {error}")
-    
-    if not code:
-        raise HTTPException(status_code=400, detail="Authorization code missing")
-    
-    # Exchange code for token
-    async with httpx.AsyncClient() as client:
-        token_url = "https://oauth2.googleapis.com/token"
-        data = {
-            "code": code,
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "redirect_uri": REDIRECT_URI,
-            "grant_type": "authorization_code"
-        }
+async def auth_google_callback(request: Request):
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        user_info = token.get('userinfo')
         
-        response = await client.post(token_url, data=data)
-        token_data = response.json()
+        if not user_info or 'email' not in user_info:
+            raise HTTPException(status_code=400, detail="Failed to fetch user info")
         
-        if "error" in token_data:
-            raise HTTPException(status_code=400, detail=token_data["error"])
-        
-        # Get user info
-        userinfo = await client.get(
-            "https://openidconnect.googleapis.com/v1/userinfo",
-            headers={"Authorization": f"Bearer {token_data['access_token']}"}
-        )
-        user_data = userinfo.json()
-        
-        # Create or update user
-        email = user_data["email"]
+        email = user_info['email']
         if email not in fake_users_db:
-            fake_users_db[email] = {
-                "username": email,
-                "password": ""  # No password for OAuth users
-            }
+            fake_users_db[email] = {"username": email, "password": ""}
         
-        # Create JWT token
         access_token = create_access_token(data={"sub": email})
-        response = RedirectResponse(url="/ui", status_code=302)
-        response.set_cookie("access_token", access_token, httponly=True)
+        response = RedirectResponse(url=f"/ui?token={access_token}", status_code=302)
+        response.set_cookie(
+            "access_token",
+            access_token,
+            httponly=True,
+            secure=COOKIE_SECURE,
+            samesite=SAME_SITE
+        )
         return response
+    except Exception as e:
+        logger.error(f"Google OAuth failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="OAuth processing error")
 
 # ✏️ Token Endpoint
 @api.post("/token")
@@ -198,21 +250,10 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate_user(form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=400, detail="Incorrect login data")
-    access_token = create_access_token(data={"sub": user["username"]})
-    return {"access_token": access_token, "token_type": "bearer"}
-
-# ✏️ Refresh Token
-@api.post("/refresh")
-async def refresh_token(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY)
-        username = payload.get("sub")
-        if username is None or username not in fake_users_db:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        new_token = create_access_token(data={"sub": username})
-        return {"access_token": new_token, "token_type": "bearer"}
-    except Exception:
-        raise HTTPException(status_code=401, detail="Token invalid or expired")
+    return {
+        "access_token": create_access_token(data={"sub": user["username"]}),
+        "token_type": "bearer"
+    }
 
 # ✏️ Protected API
 @api.get("/protected")
@@ -228,44 +269,55 @@ def read_context():
 def write_context(style: str, mode: str, language: str):
     return save_context(style, mode, language)
 
-# ✏️ Token Check for Gradio
-@api.get("/check-token")
-async def check_token(request: Request):
-    token = request.query_params.get("token")
-    if not token:
-        return RedirectResponse(url="/login")
-    try:
-        payload = jwt.decode(token, SECRET_KEY)
-        username: str = payload.get("sub")
-        if username is None or username not in fake_users_db:
-            return RedirectResponse(url="/login")
-    except Exception:
-        return RedirectResponse(url="/login")
-    return RedirectResponse(url=f"/ui?token={token}")
-
 # 🧹 Logout
 @api.get("/logout")
-async def logout():
+async def logout(request: Request):
     response = RedirectResponse(url="/login", status_code=302)
     response.delete_cookie("access_token")
+    request.session.clear()
     return response
 
 # 🧠 Gradio UI
 with gr.Blocks() as mcp_ui:
     token_state = gr.State(value="")
 
+    def get_token(request: gr.Request):
+        try:
+            token = (
+                request.query_params.get("token") or
+                request.cookies.get("access_token") or
+                (request.headers.get("authorization") or "").replace("Bearer ", "")
+            )
+            
+            if not token:
+                raise ValueError("No token provided")
+                
+            claims = decode_token(token)
+            if not claims.get("sub"):
+                raise ValueError("Invalid token content")
+                
+            return token
+            
+        except ValueError as e:
+            if hasattr(request, "cookies"):
+                request.cookies.pop("access_token", None)
+            raise gr.Error(f"Authentication failed: {str(e)}")
+        except Exception as e:
+            logger.error(f"Token validation error: {str(e)}")
+            raise gr.Error("Authentication system error")
+
+    mcp_ui.load(fn=get_token, inputs=[], outputs=[token_state], show_progress=False)
+
     with gr.Row():
-        gr.Markdown("## 🧠 Model Context Protocol Server\nManage global AI context")
-
-    def extract_token(request: gr.Request):
-        return request.query_params.get("token")
-
-    mcp_ui.load(fn=extract_token, inputs=[], outputs=[token_state])
+        gr.Markdown("## 🧠 Model Context Protocol Server")
 
     with gr.Row():
-        style = gr.Dropdown(["neutral", "sarcastic", "friendly"], value="neutral", label="Tone")
-        mode = gr.Dropdown(["default", "devsecops"], value="default", label="Mode")
-        language = gr.Dropdown(["de", "en"], value="de", label="Language")
+        style = gr.Dropdown(["neutral", "sarkastisch", "eingebildet", "freundlich"], value="neutral", label="Ton / Stil")
+        mode = gr.Dropdown(["default", "devsecops", "alert-only", "humor", "juristisch"], value="default", label="Modus")
+        language = gr.Dropdown(["de", "en"], value="de", label="Sprache")
+        
+    with gr.Row():
+        auth_status = gr.HTML("""<div id="auth-status" class="p-4 border rounded-lg"></div>""")
 
     output = gr.JSON(label="Current Context")
 
@@ -275,20 +327,98 @@ with gr.Blocks() as mcp_ui:
         run_btn = gr.Button("🚀 Run Script")
         logout_btn = gr.Button("🚪 Logout")
 
+    def update_auth_status(token):
+        if not token:
+            return """<div class="p-4 border rounded-lg bg-red-50">
+                <a href="/login" class="text-red-500 hover:text-red-700">❌ Please login</a>
+                </div>"""
+        try:
+            payload = decode_token(token)
+            return f"""<div class="p-4 border rounded-lg bg-green-50">
+                <span class="text-green-600">✅ Authenticated as: {payload['sub']}</span>
+                </div>"""
+        except ValueError as e:
+            return f"""<div class="p-4 border rounded-lg bg-red-50">
+                <a href="/login" class="text-red-500 hover:text-red-700">❌ {str(e)} (Click to login)</a>
+                </div>"""
+
+    mcp_ui.load(fn=update_auth_status, inputs=[token_state], outputs=[auth_status])
+            # Update the UI when token changes
+    token_state.change(
+        fn=update_auth_status,
+        inputs=[token_state],
+        outputs=[auth_status]
+    )
+
     set_btn.click(fn=save_context, inputs=[style, mode, language], outputs=output)
     get_btn.click(fn=load_context, outputs=output)
 
+    script_output = gr.Textbox(label="Script Output", lines=10, interactive=False)
+    
     def run_script():
-        script_path = os.path.join(os.path.dirname(__file__), '..', 'bazinga_cve_bot.py')
-        process = subprocess.Popen(["python", script_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate()
-        return stdout.decode('utf-8') if process.returncode == 0 else stderr.decode('utf-8')
+        try:
+            # Get the absolute path to the script
+            script_path = os.path.abspath("app/bazinga_cve_bot.py")
+            
+            # Check if the script exists
+            if not os.path.exists(script_path):
+                return f"Error: Script not found at {script_path}"
+            
+            # Run the script with proper error handling
+            result = subprocess.run(
+                ["python", script_path],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            # Return combined output
+            output = f"=== STDOUT ===\n{result.stdout}\n"
+            if result.stderr:
+                output += f"\n=== STDERR ===\n{result.stderr}\n"
+            return output
+            
+        except subprocess.CalledProcessError as e:
+            return f"Script failed with error:\nExit code: {e.returncode}\n\n{e.stderr}"
+        except Exception as e:
+            return f"Unexpected error: {str(e)}"
+        
+    run_btn.click(
+        fn=run_script,
+        outputs=script_output
+    )
+    
+    def logout_handler():
+        # Instead of returning a RedirectResponse, we'll use JavaScript to redirect
+        return """
+        <script>
+            window.location.href = '/logout';
+        </script>
+        """
 
-    run_btn.click(fn=run_script, outputs=gr.Textbox(label="Progress"))
+    logout_btn.click(
+        fn=None,  # No Python function needed
+        inputs=None,
+        outputs=None,
+        js="""
+        function() {
+            fetch('/logout', {method: 'GET', credentials: 'include'})
+                .then(() => window.location.href = '/login');
+            return [];
+        }
+        """
+    )
 
-    def do_logout():
-        return RedirectResponse(url="/logout")
-    logout_btn.click(fn=do_logout)
+    gr.HTML("""
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            setInterval(() => {
+                fetch('/protected', {credentials: 'include'})
+                    .catch(() => window.location.href = '/login')
+            }, 300000);
+        });
+    </script>
+    """)
 
 # Mount Gradio App
 mount_gradio_app(app=api, blocks=mcp_ui, path="/ui")
