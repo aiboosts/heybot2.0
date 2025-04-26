@@ -25,7 +25,7 @@ jobs:
       # Build the Docker image
       - name: Build the hello-docker Docker image
         run: |
-          docker build -t ghcr.io/$USER/heybot:latest .
+          docker build -t ghcr.io/$USER/heybot2.0:latest .
 
       # Install Trivy (Specific version v0.60.1)
       - name: Install Trivy
