@@ -1,29 +1,30 @@
 import os
 import subprocess
 import gradio as gr
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Form, Request, Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import HTMLResponse, RedirectResponse
 from gradio.routes import mount_gradio_app
 from authlib.jose import jwt
 import uvicorn
 from context_manager import save_context, load_context
 from datetime import datetime, timedelta
 
-# 🔥 Geheime JWT-Key (solltest du später sicher speichern, z.B. ENV-Variable!)
-SECRET_KEY = "mein-super-geheimer-key"
+# 🔥 Geheimer JWT-Key (später besser aus ENV)
+SECRET_KEY = "ich-bin-toll"
 
 # 🔥 OAuth2-Schema
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
-# Dummy-Datenbank für User
+# Dummy-User-Datenbank
 fake_users_db = {
     "test@example.com": {
         "username": "test@example.com",
-        "password": "test123"  # Passwort wäre normalerweise gehasht!
+        "password": "test123"
     }
 }
 
-# 🔥 Funktionen für Auth
+# 🔥 Authentifizierung
 def authenticate_user(username: str, password: str):
     user = fake_users_db.get(username)
     if not user or user["password"] != password:
@@ -55,10 +56,39 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-# 🚀 FastAPI + REST-Endpunkte
+# 🚀 FastAPI-App
 api = FastAPI()
 
-# ✏️ Token-Endpoint
+# 🔥 Login-Formular
+@api.get("/login", response_class=HTMLResponse)
+async def login_form():
+    return """
+    <html>
+        <body>
+            <h2>Login</h2>
+            <form action="/login" method="post">
+                <label>Email:</label><br>
+                <input type="text" name="username"><br><br>
+                <label>Passwort:</label><br>
+                <input type="password" name="password"><br><br>
+                <input type="submit" value="Login">
+            </form>
+        </body>
+    </html>
+    """
+
+@api.post("/login")
+async def login_post(username: str = Form(...), password: str = Form(...)):
+    user = authenticate_user(username, password)
+    if not user:
+        return HTMLResponse(content="Login fehlgeschlagen.", status_code=401)
+
+    access_token = create_access_token(data={"sub": user["username"]})
+
+    response = RedirectResponse(url=f"/ui?token={access_token}", status_code=302)
+    return response
+
+# ✏️ Token-Login (für CLI etc.)
 @api.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate_user(form_data.username, form_data.password)
@@ -67,12 +97,12 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     access_token = create_access_token(data={"sub": user["username"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
-# ✏️ Gesicherter Beispiel-Endpunkt
+# ✏️ Geschützter API-Endpoint
 @api.get("/protected")
 async def protected_route(current_user: dict = Depends(get_current_user)):
     return {"message": f"Willkommen {current_user['username']}!"}
 
-# ✏️ MCP-Endpunkte (offen, oder später auth sichern)
+# ✏️ MCP-Endpunkte
 @api.get("/mcp/context")
 def read_context():
     return load_context()
@@ -81,7 +111,7 @@ def read_context():
 def write_context(style: str, mode: str, language: str):
     return save_context(style, mode, language)
 
-# 🧠 Gradio-UI
+# 🧠 Gradio-UI-Definition
 with gr.Blocks() as mcp_ui:
     gr.Markdown("## 🧠 Model Context Protocol Server\nVerwalte globalen AI-Kontext für HeyBot & Co.")
 
@@ -112,8 +142,18 @@ with gr.Blocks() as mcp_ui:
 
     run_btn.click(fn=run_script, outputs=gr.Textbox(label="Progress"))
 
-# 🎯 Gradio mounten
-mount_gradio_app(app=api, blocks=mcp_ui, path="/ui")
+# 🎯 Gradio-UI geschützt mounten
+@api.get("/ui")
+async def secured_ui(token: str = Query(...)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY)
+        username = payload.get("sub")
+        if username is None or username not in fake_users_db:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ungültiger Token")
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ungültiger oder abgelaufener Token")
+
+    return mount_gradio_app(api, mcp_ui, path="/ui")
 
 # 🚀 Main
 if __name__ == "__main__":
