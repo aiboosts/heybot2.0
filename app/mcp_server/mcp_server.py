@@ -1,20 +1,25 @@
+# 🚀 Standard Imports
 import os
 import subprocess
+from datetime import datetime, timedelta
+
+# 🚀 Third Party Imports
 import gradio as gr
+import uvicorn
 from fastapi import FastAPI, Depends, HTTPException, status, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from gradio.routes import mount_gradio_app
 from authlib.jose import jwt
 from authlib.integrations.starlette_client import OAuth
-import uvicorn
+
+# 🚀 Lokale Imports
 from context_manager import save_context, load_context
-from datetime import datetime, timedelta
 
 # 🔥 Geheimer Schlüssel
 SECRET_KEY = "mein-super-geheimer-key"
 
 # 🔥 OAuth2-Schema
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
 # Dummy-User-Datenbank
@@ -113,6 +118,7 @@ async def login_post(username: str = Form(...), password: str = Form(...)):
         return HTMLResponse(content="Login fehlgeschlagen.", status_code=401)
     access_token = create_access_token(data={"sub": user["username"]})
     response = RedirectResponse(url=f"/ui?token={access_token}", status_code=302)
+    response.set_cookie("access_token", access_token, httponly=True)
     return response
 
 # ✏️ Google OAuth2 Flow Start
@@ -130,7 +136,6 @@ async def auth_google_callback(request: Request):
         raise HTTPException(status_code=400, detail="Fehler bei Google Login")
 
     username = user_info["email"]
-    # Dynamisch neuen User speichern (optional)
     if username not in fake_users_db:
         fake_users_db[username] = {
             "username": username,
@@ -209,8 +214,7 @@ with gr.Blocks() as mcp_ui:
         gr.Markdown("## 🧠 Model Context Protocol Server\nVerwalte globalen AI-Kontext für HeyBot & Co.")
 
     def extract_token(request: gr.Request):
-        token = request.query_params.get("token")
-        return token
+        return request.query_params.get("token")
 
     mcp_ui.load(fn=extract_token, inputs=[], outputs=[token_state])
 
@@ -234,10 +238,7 @@ with gr.Blocks() as mcp_ui:
         script_path = os.path.join(os.path.dirname(__file__), '..', 'bazinga_cve_bot.py')
         process = subprocess.Popen(["python", script_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = process.communicate()
-        if process.returncode == 0:
-            return stdout.decode('utf-8')
-        else:
-            return stderr.decode('utf-8')
+        return stdout.decode('utf-8') if process.returncode == 0 else stderr.decode('utf-8')
 
     run_btn.click(fn=run_script, outputs=gr.Textbox(label="Progress"))
 
