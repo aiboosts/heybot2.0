@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 SECRET_KEY = secrets.token_urlsafe(32)  # Better secret key generation
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "your-client-id.apps.googleusercontent.com")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "your-client-secret")
-REDIRECT_URI = "http://ethical-rattler-chief.ngrok-free.app/auth/google/callback"  # Updated for local testing
-COOKIE_SECURE = False # Set to True in production with HTTPS
+REDIRECT_URI = "https://ethical-rattler-chief.ngrok-free.app/auth/google/callback"
+COOKIE_SECURE = True  # Must be True for HTTPS
 SAME_SITE = "lax"  
 
 # 🔥 OAuth2 Schema
@@ -204,9 +204,9 @@ async def login_post(username: str = Form(...), password: str = Form(...)):
             "access_token",
             access_token,
             httponly=True,
-            secure=True,  # Must be True
-            samesite="lax",
-            domain=".ngrok-free.app"  # Important for ngrok
+            secure=COOKIE_SECURE,
+            samesite=SAME_SITE,
+            domain=".ngrok-free.app"
         )
         
         return response
@@ -214,43 +214,79 @@ async def login_post(username: str = Form(...), password: str = Form(...)):
         logger.error(f"Login failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Authentication error")
 
+# 🔐 Google OAuth Implementation
 @api.get("/auth/google")
 async def auth_google(request: Request):
+    # Generate state and store in session
     state = secrets.token_urlsafe(16)
     request.session["oauth_state"] = state
-    return await oauth.google.authorize_redirect(
-        request, 
-        REDIRECT_URI,
-        state=state
+    
+    authorization_url = (
+        f"https://accounts.google.com/o/oauth2/auth?"
+        f"response_type=code&"
+        f"client_id={GOOGLE_CLIENT_ID}&"
+        f"redirect_uri={REDIRECT_URI}&"
+        f"scope=openid%20email%20profile&"
+        f"state={state}"
     )
+    return RedirectResponse(authorization_url)
 
 @api.get("/auth/google/callback")
-async def auth_google_callback(request: Request):
-    try:
-        token = await oauth.google.authorize_access_token(request)
-        user_info = token.get('userinfo')
+async def auth_google_callback(request: Request, code: str = None, state: str = None, error: str = None):
+    # Verify state
+    if not state or state != request.session.get("oauth_state"):
+        raise HTTPException(status_code=400, detail="Invalid state")
+    
+    if error:
+        raise HTTPException(status_code=400, detail=f"Google auth error: {error}")
+    
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code missing")
+    
+    # Exchange code for token
+    async with httpx.AsyncClient() as client:
+        token_url = "https://oauth2.googleapis.com/token"
+        data = {
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": REDIRECT_URI,
+            "grant_type": "authorization_code"
+        }
         
-        if not user_info or 'email' not in user_info:
-            raise HTTPException(status_code=400, detail="Failed to fetch user info")
+        response = await client.post(token_url, data=data)
+        token_data = response.json()
         
-        email = user_info['email']
+        if "error" in token_data:
+            raise HTTPException(status_code=400, detail=token_data["error"])
+        
+        # Get user info
+        userinfo = await client.get(
+            "https://openidconnect.googleapis.com/v1/userinfo",
+            headers={"Authorization": f"Bearer {token_data['access_token']}"}
+        )
+        user_data = userinfo.json()
+        
+        # Create or update user
+        email = user_data["email"]
         if email not in fake_users_db:
-            fake_users_db[email] = {"username": email, "password": ""}
+            fake_users_db[email] = {
+                "username": email,
+                "password": ""  # No password for OAuth users
+            }
         
+        # Create JWT token
         access_token = create_access_token(data={"sub": email})
         response = RedirectResponse(url="/ui", status_code=302)
         response.set_cookie(
             "access_token",
             access_token,
             httponly=True,
-            secure=True,  # Must be True
+            secure=True,
             samesite="lax",
             domain=".ngrok-free.app"
         )
         return response
-    except Exception as e:
-        logger.error(f"Google OAuth failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="OAuth processing error")
 
 # ✏️ Token Endpoint
 @api.post("/token")
@@ -351,7 +387,6 @@ with gr.Blocks() as mcp_ui:
                 </div>"""
 
     mcp_ui.load(fn=update_auth_status, inputs=[token_state], outputs=[auth_status])
-            # Update the UI when token changes
     token_state.change(
         fn=update_auth_status,
         inputs=[token_state],
@@ -365,14 +400,10 @@ with gr.Blocks() as mcp_ui:
     
     def run_script():
         try:
-            # Get the absolute path to the script
             script_path = os.path.abspath("bazinga_cve_bot.py")
-            
-            # Check if the script exists
             if not os.path.exists(script_path):
                 return f"Error: Script not found at {script_path}"
             
-            # Run the script with proper error handling
             result = subprocess.run(
                 ["python", script_path],
                 capture_output=True,
@@ -380,7 +411,6 @@ with gr.Blocks() as mcp_ui:
                 check=True
             )
             
-            # Return combined output
             output = f"=== STDOUT ===\n{result.stdout}\n"
             if result.stderr:
                 output += f"\n=== STDERR ===\n{result.stderr}\n"
@@ -391,21 +421,10 @@ with gr.Blocks() as mcp_ui:
         except Exception as e:
             return f"Unexpected error: {str(e)}"
         
-    run_btn.click(
-        fn=run_script,
-        outputs=script_output
-    )
+    run_btn.click(fn=run_script, outputs=script_output)
     
-    def logout_handler():
-        # Instead of returning a RedirectResponse, we'll use JavaScript to redirect
-        return """
-        <script>
-            window.location.href = '/logout';
-        </script>
-        """
-
     logout_btn.click(
-        fn=None,  # No Python function needed
+        fn=None,
         inputs=None,
         outputs=None,
         js="""
