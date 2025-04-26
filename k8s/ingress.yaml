@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: heybot
+spec:
+  ingressClassName: ngrok
+  rules:
+    - host: "ethical-rattler-chief.ngrok-free.app"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: heybot2-service
+                port:
+                  number: 7861
