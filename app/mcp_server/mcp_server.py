@@ -60,6 +60,7 @@ async def login_form(request: Request):
             payload = jwt.decode(token, SECRET_KEY)
             username: str = payload.get("sub")
             if username and username in fake_users_db:
+                # Token ist gültig, weiterleiten zu /ui
                 return RedirectResponse(url=f"/ui?token={token}", status_code=302)
         except Exception:
             pass  # Token ungültig, dann zeige normales Login-Formular
