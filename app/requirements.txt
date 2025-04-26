@@ -5,3 +5,5 @@ discord.py
 gradio
 fastapi
 uvicorn
+authlib
+python-multipart
