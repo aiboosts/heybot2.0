@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: heybot2
-          image: ghcr.io/aiboosts/heybot-with-trivy-output:latest
+          image: ghcr.io/aiboosts/heybot2.0-with-trivy-output:latest
           ports:
             - containerPort: 7861
           # command: ["/bin/bash", "-c", "while true; do sleep 3600; done"]
