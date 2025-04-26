@@ -33,7 +33,7 @@ SECRET_KEY = secrets.token_urlsafe(32)  # Better secret key generation
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "your-client-id.apps.googleusercontent.com")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "your-client-secret")
 REDIRECT_URI = "http://ethical-rattler-chief.ngrok-free.app/auth/google/callback"  # Updated for local testing
-COOKIE_SECURE = True  # Set to True in production with HTTPS
+COOKIE_SECURE = False # Set to True in production with HTTPS
 SAME_SITE = "lax"  
 
 # 🔥 OAuth2 Schema
