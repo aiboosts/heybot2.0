@@ -51,9 +51,20 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 # 🚀 FastAPI App
 api = FastAPI()
 
-# ✨ Schöneres Login-Formular (TailwindCSS)
 @api.get("/login", response_class=HTMLResponse)
-async def login_form():
+async def login_form(request: Request):
+    # Überprüfen, ob der Benutzer bereits eingeloggt ist (Token vorhanden)
+    token = request.cookies.get("access_token") or request.query_params.get("token")
+    if token:
+        try:
+            payload = jwt.decode(token, SECRET_KEY)
+            username: str = payload.get("sub")
+            if username and username in fake_users_db:
+                return RedirectResponse(url=f"/ui?token={token}", status_code=302)
+        except Exception:
+            pass  # Token ungültig, dann zeige normales Login-Formular
+
+    # Wenn nicht eingeloggt, zeige das Login-Formular an
     return """
     <html>
         <head>
