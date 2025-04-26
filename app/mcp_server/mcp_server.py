@@ -2,18 +2,19 @@ import os
 import subprocess
 import gradio as gr
 from fastapi import FastAPI, Depends, HTTPException, status, Form, Request, Response
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse, RedirectResponse
 from gradio.routes import mount_gradio_app
 from authlib.jose import jwt
+from authlib.integrations.starlette_client import OAuth
 import uvicorn
 from context_manager import save_context, load_context
 from datetime import datetime, timedelta
 
-# 🔥 Geheimer Schlüssel (in Produktion besser als ENV-Variable)
+# 🔥 Geheimer Schlüssel
 SECRET_KEY = "mein-super-geheimer-key"
 
 # 🔥 OAuth2-Schema
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
 # Dummy-User-Datenbank
@@ -51,21 +52,30 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 # 🚀 FastAPI App
 api = FastAPI()
 
+# ✏️ OAuth Konfiguration
+oauth = OAuth()
+oauth.register(
+    name='google',
+    client_id=os.getenv("GOOGLE_CLIENT_ID"),
+    client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_kwargs={"scope": "openid email profile"},
+)
+
+# 🧠 Login-Seite
 @api.get("/login", response_class=HTMLResponse)
 async def login_form(request: Request):
-    # Überprüfen, ob der Benutzer bereits eingeloggt ist (Token vorhanden)
     token = request.cookies.get("access_token") or request.query_params.get("token")
     if token:
         try:
             payload = jwt.decode(token, SECRET_KEY)
             username: str = payload.get("sub")
             if username and username in fake_users_db:
-                # Token ist gültig, weiterleiten zu /ui
                 return RedirectResponse(url=f"/ui?token={token}", status_code=302)
         except Exception:
-            pass  # Token ungültig, dann zeige normales Login-Formular
+            pass
 
-    # Wenn nicht eingeloggt, zeige das Login-Formular an
+    # Normales Login-Formular + Google Login Button
     return """
     <html>
         <head>
@@ -87,11 +97,15 @@ async def login_form(request: Request):
                         <button type="submit" class="w-full bg-blue-500 text-white py-2 rounded hover:bg-blue-600">Login</button>
                     </div>
                 </form>
+                <div class="mt-6 text-center">
+                    <a href="/auth/google" class="inline-block bg-red-500 text-white py-2 px-4 rounded hover:bg-red-600">🔵 Mit Google anmelden</a>
+                </div>
             </div>
         </body>
     </html>
     """
 
+# ✏️ Login mit Benutzername/Passwort
 @api.post("/login")
 async def login_post(username: str = Form(...), password: str = Form(...)):
     user = authenticate_user(username, password)
@@ -101,7 +115,34 @@ async def login_post(username: str = Form(...), password: str = Form(...)):
     response = RedirectResponse(url=f"/ui?token={access_token}", status_code=302)
     return response
 
-# ✏️ Token-Endpoint (für API-Clients)
+# ✏️ Google OAuth2 Flow Start
+@api.get("/auth/google")
+async def auth_google(request: Request):
+    redirect_uri = request.url_for('auth_google_callback')
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+# ✏️ Google OAuth2 Callback
+@api.get("/auth/google/callback")
+async def auth_google_callback(request: Request):
+    token = await oauth.google.authorize_access_token(request)
+    user_info = token.get('userinfo')
+    if user_info is None:
+        raise HTTPException(status_code=400, detail="Fehler bei Google Login")
+
+    username = user_info["email"]
+    # Dynamisch neuen User speichern (optional)
+    if username not in fake_users_db:
+        fake_users_db[username] = {
+            "username": username,
+            "password": ""  # Passwort leer bei OAuth
+        }
+
+    access_token = create_access_token(data={"sub": username})
+    response = RedirectResponse(url=f"/ui?token={access_token}", status_code=302)
+    response.set_cookie("access_token", access_token, httponly=True)
+    return response
+
+# ✏️ Token-Endpoint
 @api.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate_user(form_data.username, form_data.password)
@@ -110,7 +151,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     access_token = create_access_token(data={"sub": user["username"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
-# 🛡️ Bonus: Refresh-Token (simple Variante)
+# ✏️ Refresh-Token
 @api.post("/refresh")
 async def refresh_token(token: str = Depends(oauth2_scheme)):
     try:
@@ -118,7 +159,6 @@ async def refresh_token(token: str = Depends(oauth2_scheme)):
         username = payload.get("sub")
         if username is None or username not in fake_users_db:
             raise HTTPException(status_code=401, detail="Ungültiges Token")
-        # Neues Token erstellen
         new_token = create_access_token(data={"sub": username})
         return {"access_token": new_token, "token_type": "bearer"}
     except Exception:
@@ -138,7 +178,7 @@ def read_context():
 def write_context(style: str, mode: str, language: str):
     return save_context(style, mode, language)
 
-# ✏️ Check-Token für Gradio-UI Absicherung
+# ✏️ Token-Check für Gradio
 @api.get("/check-token")
 async def check_token(request: Request):
     token = request.query_params.get("token")
@@ -154,21 +194,20 @@ async def check_token(request: Request):
     
     return RedirectResponse(url=f"/ui?token={token}")
 
-# 🧹 Bonus: Logout
+# 🧹 Logout
 @api.get("/logout")
 async def logout():
     response = RedirectResponse(url="/login", status_code=302)
     response.delete_cookie("access_token")
     return response
 
-# 🧠 Gradio-UI
+# 🧠 Gradio UI
 with gr.Blocks() as mcp_ui:
     token_state = gr.State(value="")
 
     with gr.Row():
         gr.Markdown("## 🧠 Model Context Protocol Server\nVerwalte globalen AI-Kontext für HeyBot & Co.")
 
-    # Token aus der URL beim Laden extrahieren
     def extract_token(request: gr.Request):
         token = request.query_params.get("token")
         return token
@@ -202,7 +241,6 @@ with gr.Blocks() as mcp_ui:
 
     run_btn.click(fn=run_script, outputs=gr.Textbox(label="Progress"))
 
-    # 🧹 Logout-Button
     def do_logout():
         return RedirectResponse(url="/logout")
     logout_btn.click(fn=do_logout)
