@@ -46,4 +46,4 @@ jobs:
       # Push the Docker image to GitHub Container Registry
       - name: Push the Docker image to GitHub Container Registry
         run: |
-          docker push ghcr.io/$USER/heybot-with-trivy-output:latest
+          docker push ghcr.io/$USER/heybot2.0-with-trivy-output:latest
