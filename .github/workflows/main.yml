@@ -36,12 +36,12 @@ jobs:
       # Scan the Docker image for vulnerabilities
       - name: Scan Docker image for vulnerabilities
         run: |
-          trivy image --severity HIGH,CRITICAL --format json --output trivy_output.json ghcr.io/$USER/heybot:latest
+          trivy image --severity HIGH,CRITICAL --format json --output trivy_output.json ghcr.io/$USER/heybot2.0:latest
       
       # Build the new Docker image with trivy_output.json
       - name: Build the new Docker image with trivy_output.json
         run: |
-          docker build -t ghcr.io/$USER/heybot-with-trivy-output:latest -f Dockerfile.trivy-analysis .
+          docker build -t ghcr.io/$USER/heybot2.0-with-trivy-output:latest -f Dockerfile.trivy-analysis .
       
       # Push the Docker image to GitHub Container Registry
       - name: Push the Docker image to GitHub Container Registry

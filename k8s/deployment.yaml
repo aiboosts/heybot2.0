@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: heybot-app
+  name: heybot2.0-app
   namespace: default
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: heybot
+      app: heybot2.0
   template:
     metadata:
       labels:
-        app: heybot
+        app: heybot2.0
     spec:
       containers:
-        - name: heybot
+        - name: heybot2.0
           image: ghcr.io/aiboosts/heybot-with-trivy-output:latest
           ports:
             - containerPort: 7861

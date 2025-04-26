@@ -1,5 +1,5 @@
 # Use the already built image as the base
-FROM ghcr.io/aiboosts/heybot:latest
+FROM ghcr.io/aiboosts/heybot2.0:latest
 
 # Copy the Trivy scan output file into the image
 COPY trivy_output.json /app/trivy_output.json
