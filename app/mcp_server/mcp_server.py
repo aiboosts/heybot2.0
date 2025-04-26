@@ -48,9 +48,8 @@ oauth.register(
     server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
     client_kwargs={
         'scope': 'openid email profile',
-        'redirect_uri': REDIRECT_URI  # Explicitly set
+        'redirect_uri': REDIRECT_URI
     },
-
 )
 
 # Dummy user database
@@ -202,12 +201,12 @@ async def login_post(username: str = Form(...), password: str = Form(...)):
         )
         
         response.set_cookie(
-            key="access_token",
-            value=access_token,
+            "access_token",
+            access_token,
             httponly=True,
-            max_age=1800,
-            secure=COOKIE_SECURE,
-            samesite=SAME_SITE
+            secure=True,  # Must be True
+            samesite="lax",
+            domain=".ngrok-free.app"  # Important for ngrok
         )
         
         return response
@@ -215,72 +214,43 @@ async def login_post(username: str = Form(...), password: str = Form(...)):
         logger.error(f"Login failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Authentication error")
 
-# 🔐 Google OAuth Implementation
 @api.get("/auth/google")
 async def auth_google(request: Request):
-    # Generate state and store in session
     state = secrets.token_urlsafe(16)
     request.session["oauth_state"] = state
-    
-    authorization_url = (
-        f"https://accounts.google.com/o/oauth2/auth?"
-        f"response_type=code&"
-        f"client_id={GOOGLE_CLIENT_ID}&"
-        f"redirect_uri={REDIRECT_URI}&"
-        f"scope=openid%20email%20profile&"
-        f"state={state}"
+    return await oauth.google.authorize_redirect(
+        request, 
+        REDIRECT_URI,
+        state=state
     )
-    return RedirectResponse(authorization_url)
 
 @api.get("/auth/google/callback")
-async def auth_google_callback(request: Request, code: str = None, state: str = None, error: str = None):
-    # Verify state
-    if not state or state != request.session.get("oauth_state"):
-        raise HTTPException(status_code=400, detail="Invalid state")
-    
-    if error:
-        raise HTTPException(status_code=400, detail=f"Google auth error: {error}")
-    
-    if not code:
-        raise HTTPException(status_code=400, detail="Authorization code missing")
-    
-    # Exchange code for token
-    async with httpx.AsyncClient() as client:
-        token_url = "https://oauth2.googleapis.com/token"
-        data = {
-            "code": code,
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "redirect_uri": REDIRECT_URI,
-            "grant_type": "authorization_code"
-        }
+async def auth_google_callback(request: Request):
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        user_info = token.get('userinfo')
         
-        response = await client.post(token_url, data=data)
-        token_data = response.json()
+        if not user_info or 'email' not in user_info:
+            raise HTTPException(status_code=400, detail="Failed to fetch user info")
         
-        if "error" in token_data:
-            raise HTTPException(status_code=400, detail=token_data["error"])
-        
-        # Get user info
-        userinfo = await client.get(
-            "https://openidconnect.googleapis.com/v1/userinfo",
-            headers={"Authorization": f"Bearer {token_data['access_token']}"}
-        )
-        user_data = userinfo.json()
-        
-        # Create or update user
-        email = user_data["email"]
+        email = user_info['email']
         if email not in fake_users_db:
-            fake_users_db[email] = {
-                "username": email,
-                "password": ""  # No password for OAuth users
-            }
+            fake_users_db[email] = {"username": email, "password": ""}
         
-        # Create JWT token
         access_token = create_access_token(data={"sub": email})
         response = RedirectResponse(url="/ui", status_code=302)
-        response.set_cookie("access_token", access_token, httponly=True)
+        response.set_cookie(
+            "access_token",
+            access_token,
+            httponly=True,
+            secure=True,  # Must be True
+            samesite="lax",
+            domain=".ngrok-free.app"
+        )
         return response
+    except Exception as e:
+        logger.error(f"Google OAuth failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="OAuth processing error")
 
 # ✏️ Token Endpoint
 @api.post("/token")
