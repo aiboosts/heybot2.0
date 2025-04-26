@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: heybot2.0-service
+  name: heybot2-service
 spec:
   selector:
-    app: heybot2.0
+    app: heybot2
   ports:
     - protocol: TCP
       port: 7861
